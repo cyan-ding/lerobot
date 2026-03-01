@@ -14,6 +14,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import torch
 
@@ -40,6 +41,29 @@ def get_aggregate_function(name: str) -> Callable[[torch.Tensor, torch.Tensor], 
         available = list(AGGREGATE_FUNCTIONS.keys())
         raise ValueError(f"Unknown aggregate function '{name}'. Available: {available}")
     return AGGREGATE_FUNCTIONS[name]
+
+
+@dataclass
+class CosmosSafetyConfig:
+    """Configuration for Cosmos safety monitor (pour detection and trajectory validation)."""
+
+    enabled: bool = field(default=False, metadata={"help": "Enable Cosmos safety monitoring"})
+    binary_check_interval: float = field(
+        default=1.0,
+        metadata={"help": "Interval in seconds between binary 'about to pour' checks"},
+    )
+    min_frames_for_check: int = field(
+        default=8,
+        metadata={"help": "Minimum frames (at 4 fps) required for Cosmos clip"},
+    )
+    camera_keys: list[str] | None = field(
+        default=None,
+        metadata={"help": "Camera keys to use (e.g. ['front', 'top']). None = auto-detect"},
+    )
+    prompt_path: str | Path = field(
+        default="prompt.txt",
+        metadata={"help": "Path to prompt for full reasoning"},
+    )
 
 
 @dataclass
@@ -146,6 +170,12 @@ class RobotClientConfig:
     # Debug configuration
     debug_visualize_queue_size: bool = field(
         default=False, metadata={"help": "Visualize the action queue size"}
+    )
+
+    # Cosmos safety configuration (optional)
+    cosmos_safety: CosmosSafetyConfig = field(
+        default_factory=CosmosSafetyConfig,
+        metadata={"help": "Cosmos safety monitor config. Set cosmos_safety.enabled=True to enable."},
     )
 
     @property
