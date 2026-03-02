@@ -29,9 +29,7 @@ python src/lerobot/async_inference/robot_client.py \
     --actions_per_chunk=50 \
     --chunk_size_threshold=0.5 \
     --aggregate_fn_name=weighted_average \
-    --debug_visualize_queue_size=True \
-    # Enable Cosmos safety (pour detection + trajectory validation): \
-    # --cosmos_safety.enabled=True
+    --debug_visualize_queue_size=True
 ```
 """
 
@@ -62,7 +60,7 @@ from lerobot.transport import (
 from lerobot.transport.utils import grpc_channel_options, send_bytes_in_chunks
 from lerobot.utils.import_utils import register_third_party_plugins
 
-from .configs import RobotClientConfig, CosmosSafetyConfig
+from .configs import RobotClientConfig
 from .helpers import (
     Action,
     FPSTracker,
@@ -133,56 +131,6 @@ class RobotClient:
         self.must_go = threading.Event()
         self.must_go.set()  # Initially set - observations qualify for direct processing
 
-        # Cosmos safety monitor (optional)
-        self._cosmos_monitor = None
-        if getattr(config, "cosmos_safety", None) and config.cosmos_safety.enabled:
-            self._init_cosmos_monitor(config.cosmos_safety)
-
-    def _init_cosmos_monitor(self, cosmos_config: CosmosSafetyConfig) -> None:
-        """Initialize Cosmos safety monitor if cosmos_safety module is available."""
-        try:
-            import sys
-            from pathlib import Path
-
-            # Add project root (parent of lerobot) to path for cosmos_safety import
-            _lerobot_src = Path(__file__).resolve().parent
-            _lerobot_root = _lerobot_src.parent.parent  # lerobot/src/lerobot -> lerobot
-            _project_root = _lerobot_root.parent  # cosmos project root
-            if str(_project_root) not in sys.path:
-                sys.path.insert(0, str(_project_root))
-
-            from cosmos_safety import (
-                CosmosBinaryChecker,
-                CosmosFullReasoner,
-                CosmosSafetyMonitor,
-                FrameBuffer,
-            )
-
-            # Resolve prompt_path relative to project root
-            prompt_path = Path(cosmos_config.prompt_path)
-            if not prompt_path.is_absolute():
-                prompt_path = _project_root / prompt_path
-
-            frame_buffer = FrameBuffer(
-                max_frames=32,
-                sample_rate=8,
-                camera_keys=cosmos_config.camera_keys,
-            )
-            binary_checker = CosmosBinaryChecker()
-            full_reasoner = CosmosFullReasoner(prompt_path=prompt_path)
-            self._cosmos_monitor = CosmosSafetyMonitor(
-                frame_buffer=frame_buffer,
-                binary_checker=binary_checker,
-                full_reasoner=full_reasoner,
-                binary_check_interval=cosmos_config.binary_check_interval,
-                min_frames_for_check=cosmos_config.min_frames_for_check,
-                camera_key=cosmos_config.camera_keys[0] if cosmos_config.camera_keys else None,
-                prompt_path=prompt_path,
-            )
-            self.logger.info("Cosmos safety monitor initialized")
-        except Exception as e:
-            self.logger.warning(f"Could not initialize Cosmos safety monitor: {e}")
-
     @property
     def running(self):
         return not self.shutdown_event.is_set()
@@ -211,9 +159,6 @@ class RobotClient:
 
             self.shutdown_event.clear()
 
-            if self._cosmos_monitor is not None:
-                self._cosmos_monitor.start()
-
             return True
 
         except grpc.RpcError as e:
@@ -223,9 +168,6 @@ class RobotClient:
     def stop(self):
         """Stop the robot client"""
         self.shutdown_event.set()
-
-        if self._cosmos_monitor is not None:
-            self._cosmos_monitor.stop()
 
         self.robot.disconnect()
         self.logger.debug("Robot disconnected")
@@ -420,15 +362,6 @@ class RobotClient:
         action = {key: action_tensor[i].item() for i, key in enumerate(self.robot.action_features)}
         return action
 
-    def _get_hold_action(self) -> dict[str, float]:
-        """Get current joint positions for hold (pause) command."""
-        obs = self.robot.get_observation()
-        return {
-            key: float(obs[key])
-            for key in self.robot.action_features
-            if key in obs
-        }
-
     def control_loop_action(self, verbose: bool = False) -> dict[str, Any]:
         """Reading and performing actions in local queue"""
         # Lock only for queue operations
@@ -473,9 +406,6 @@ class RobotClient:
 
             raw_observation: RawObservation = self.robot.get_observation()
             raw_observation["task"] = task
-
-            if self._cosmos_monitor is not None:
-                self._cosmos_monitor.push_observation(raw_observation)
 
             with self.latest_action_lock:
                 latest_action = self.latest_action
@@ -530,11 +460,8 @@ class RobotClient:
 
         while self.running:
             control_loop_start = time.perf_counter()
-            """Control loop: (1) Performing actions, when available (or hold when Cosmos paused)"""
-            if self._cosmos_monitor is not None and self._cosmos_monitor.is_paused:
-                hold_action = self._get_hold_action()
-                _performed_action = self.robot.send_action(hold_action)
-            elif self.actions_available():
+            """Control loop: (1) Performing actions, when available"""
+            if self.actions_available():
                 _performed_action = self.control_loop_action(verbose)
 
             """Control loop: (2) Streaming observations to the remote policy server"""
