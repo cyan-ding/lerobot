@@ -482,11 +482,12 @@ def record_loop(
                 action_values = act_processed_teleop
                 robot_action_to_send = robot_action_processor((act_processed_teleop, obs))
 
-        # Send action to robot
+        # Send action to robot (skip when Cosmos paused - robot holds last commanded position)
         # Action can eventually be clipped using `max_relative_target`,
         # so action actually sent is saved in the dataset. action = postprocessor.process(action)
         # TODO(steven, pepijn, adil): we should use a pipeline step to clip the action, so the sent action is the action that we input to the robot.
-        _sent_action = robot.send_action(robot_action_to_send)
+        if cosmos_monitor is None or not cosmos_monitor.is_paused:
+            _sent_action = robot.send_action(robot_action_to_send)
 
         # Write to dataset
         if dataset is not None:
